@@ -11,11 +11,11 @@ from datetime import datetime
 BASE_STORE_URL = "https://www.tadu.com/store/98-a-0-15-a-20-p-{page}-909"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; TaduHybrid/1.0)"}
 NUM_CHAPTERS = 5
+MAX_BOOKS = 5   # 👈 GIỚI HẠN CHỈ LẤY 5 TRUYỆN
 
 
 # ---------------- SAFE GET ----------------
 def safe_get(url, headers=None, timeout=30, retries=3, sleep=1):
-    """Tải trang an toàn, retry nếu lỗi mạng"""
     for attempt in range(retries):
         try:
             resp = requests.get(url, headers=headers, timeout=timeout)
@@ -41,7 +41,8 @@ def get_book_ids(page: int):
             ids.add(m.group(1))
 
     ids = sorted(ids)
-    print(f"✅ Tìm thấy {len(ids)} book IDs trên trang {page}.")
+    ids = ids[:MAX_BOOKS]  # 👈 GIỚI HẠN 5 BOOK ĐẦU TIÊN
+    print(f"✅ Tìm thấy {len(ids)} book IDs (giới hạn {MAX_BOOKS} truyện).")
     return ids
 
 
@@ -58,7 +59,7 @@ def crawl_book_info(book_id: str):
     author_tag = soup.find("span", class_="author")
     author = author_tag.get_text(strip=True) if author_tag else ""
 
-    # Lấy URL ảnh cover
+    # Ảnh bìa
     img_tag = soup.find("img", attrs={"data-src": True}) or soup.find("img")
     img_url = ""
     if img_tag:
@@ -68,7 +69,6 @@ def crawl_book_info(book_id: str):
         elif img_url.startswith("/"):
             img_url = "https://www.tadu.com" + img_url
 
-    # fallback nếu ảnh rỗng
     if not img_url or re.match(r"^https://media\d+\.tadu\.com//?$", img_url):
         meta_img = soup.find("meta", property="og:image")
         if meta_img and meta_img.get("content"):
@@ -86,7 +86,7 @@ def crawl_book_info(book_id: str):
         "id": book_id,
         "title": title,
         "author": author,
-        "cover_image": img_url,  # trả về URL, không lưu file
+        "cover_image": img_url,
         "description": description,
         "genres": genres,
         "url": url,
@@ -95,7 +95,6 @@ def crawl_book_info(book_id: str):
 
 # ---------------- LẤY CHƯƠNG ----------------
 def crawl_chapter_title(book_id, chapter_index):
-    """Lấy title chương từ HTML"""
     read_url = f"https://www.tadu.com/book/{book_id}/{chapter_index}/?isfirstpart=true"
     resp = safe_get(read_url, headers=HEADERS)
     soup = BeautifulSoup(resp.text, "lxml")
@@ -111,7 +110,6 @@ def crawl_chapter_title(book_id, chapter_index):
 
 
 def crawl_chapter_content(book_id, chapter_index):
-    """Lấy nội dung chương từ API JSON"""
     api_url = f"https://www.tadu.com/getPartContentByCodeTable/{book_id}/{chapter_index}"
     try:
         resp = safe_get(api_url, headers=HEADERS)
@@ -138,7 +136,7 @@ def crawl_first_n_chapters(book_id, n=NUM_CHAPTERS):
             "title": title,
             "content": content,
         })
-        time.sleep(0.3)  # giảm delay để nhanh hơn
+        time.sleep(0.3)
     return chapters
 
 
