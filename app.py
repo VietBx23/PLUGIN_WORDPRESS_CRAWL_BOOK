@@ -4,40 +4,28 @@ from flask import Flask, request, jsonify
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 import time
-import logging
 
 # ---------------- CONFIG ----------------
 BASE_STORE_URL = "https://www.tadu.com/store/98-a-0-15-a-20-p-{page}-909"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; TaduHybrid/1.0)"}
-MAX_WORKERS_BOOKS = 15
-MAX_WORKERS_CHAPTERS = 10
-
-# ---------------- LOGGING ----------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S"
-)
-logger = logging.getLogger("tadu_crawler")
+MAX_WORKERS_BOOKS = 15       # Song song crawl books
+MAX_WORKERS_CHAPTERS = 10    # Song song crawl chapters mỗi book
 
 # ---------------- SAFE GET ----------------
 def safe_get(url, headers=None, timeout=15, retries=2, sleep=0.1):
     for attempt in range(retries):
         try:
-            logger.debug(f"GET {url} (thử {attempt+1}/{retries})")
             resp = requests.get(url, headers=headers, timeout=timeout)
             resp.raise_for_status()
             return resp
         except Exception as e:
-            logger.warning(f"[Lỗi mạng] {e} (thử {attempt+1}/{retries})")
+            print(f"[Lỗi mạng] {e} (thử {attempt+1}/{retries})")
             time.sleep(sleep)
-    logger.error(f"Không thể truy cập {url} sau {retries} lần")
     raise Exception(f"Không thể truy cập {url} sau {retries} lần")
 
 # ---------------- LẤY DANH SÁCH BOOK ----------------
 def get_book_ids(page: int):
     url = BASE_STORE_URL.format(page=page)
-    logger.info(f"Lấy danh sách book page {page}")
     resp = safe_get(url, headers=HEADERS)
     soup = BeautifulSoup(resp.text, "lxml")
     ids = set()
@@ -45,13 +33,11 @@ def get_book_ids(page: int):
         m = re.search(r"/book/(\d+)/", a["href"])
         if m:
             ids.add(m.group(1))
-    logger.info(f"Tìm thấy {len(ids)} book trên page {page}")
-    return sorted(ids)
+    return sorted(ids)  # Không giới hạn số book, lấy tất cả trên page
 
 # ---------------- LẤY THÔNG TIN BOOK ----------------
 def crawl_book_info(book_id: str):
     url = f"https://www.tadu.com/book/{book_id}/"
-    logger.info(f"Crawl info book {book_id}")
     resp = safe_get(url, headers=HEADERS)
     soup = BeautifulSoup(resp.text, "lxml")
 
@@ -61,6 +47,7 @@ def crawl_book_info(book_id: str):
     author_tag = soup.find("span", class_="author")
     author = author_tag.get_text(strip=True) if author_tag else ""
 
+    # Lấy ảnh bìa
     img_tag = soup.find("img", attrs={"data-src": True}) or soup.find("img")
     img_url = ""
     if img_tag:
@@ -80,7 +67,6 @@ def crawl_book_info(book_id: str):
     if sort_div:
         genres = [a.get_text(strip=True) for a in sort_div.find_all("a")]
 
-    logger.debug(f"Book {book_id} - title: {title}, author: {author}")
     return {
         "id": book_id,
         "title": title,
@@ -94,7 +80,6 @@ def crawl_book_info(book_id: str):
 # ---------------- LẤY CHƯƠNG SONG SONG ----------------
 def crawl_chapter_title(book_id, chapter_index):
     url = f"https://www.tadu.com/book/{book_id}/{chapter_index}/?isfirstpart=true"
-    logger.debug(f"Lấy title chapter {chapter_index} book {book_id}")
     resp = safe_get(url, headers=HEADERS)
     soup = BeautifulSoup(resp.text, "lxml")
     h4_tags = soup.find_all("h4")
@@ -105,17 +90,13 @@ def crawl_chapter_title(book_id, chapter_index):
 def crawl_chapter_content(book_id, chapter_index):
     api_url = f"https://www.tadu.com/getPartContentByCodeTable/{book_id}/{chapter_index}"
     try:
-        logger.debug(f"Lấy content chapter {chapter_index} book {book_id}")
         resp = safe_get(api_url, headers=HEADERS)
         data = resp.json()
-        if data.get("status") != 200:
-            logger.warning(f"Chapter {chapter_index} book {book_id} trả về status {data.get('status')}")
-            return ""
+        if data.get("status") != 200: return ""
         raw_content = data["data"]["content"]
         soup = BeautifulSoup(raw_content, "html.parser")
         return soup.get_text(separator="\n")
-    except Exception as e:
-        logger.error(f"Lỗi lấy content chapter {chapter_index} book {book_id}: {e}")
+    except:
         return ""
 
 def crawl_first_n_chapters(book_id, n):
@@ -129,9 +110,7 @@ def crawl_first_n_chapters(book_id, n):
     with ThreadPoolExecutor(max_workers=MAX_WORKERS_CHAPTERS) as executor:
         futures = [executor.submit(crawl_single, i) for i in range(1, n+1)]
         for f in as_completed(futures):
-            chapter = f.result()
-            logger.info(f"Hoàn tất chapter {chapter['index']} book {book_id}")
-            chapters.append(chapter)
+            chapters.append(f.result())
 
     chapters.sort(key=lambda x: x["index"])
     return chapters
@@ -148,19 +127,16 @@ def crawl_api():
     page_num = request.args.get("page", default=1, type=int)
     num_chapters = request.args.get("num_chapters", default=5, type=int)
 
-    logger.info(f"Yêu cầu crawl page {page_num}, {num_chapters} chapter mỗi book")
     book_ids = get_book_ids(page_num)
     if not book_ids:
-        logger.warning("Không tìm thấy book nào")
         return jsonify({"error": "Không tìm thấy book nào"}), 404
 
     results = []
 
+    # Crawl books song song
     def crawl_book(book_id):
-        logger.info(f"Bắt đầu crawl book {book_id}")
         info = crawl_book_info(book_id)
         info["chapters"] = crawl_first_n_chapters(book_id, num_chapters)
-        logger.info(f"Hoàn tất crawl book {book_id}")
         return info
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS_BOOKS) as executor:
@@ -168,7 +144,6 @@ def crawl_api():
         for f in as_completed(futures):
             results.append(f.result())
 
-    logger.info(f"Hoàn tất crawl page {page_num}, tổng {len(results)} book")
     return jsonify({"results": results})
 
 if __name__ == "__main__":
